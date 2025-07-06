@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
-import openai
 import requests
 import os
+from openai import OpenAI
 
 app = Flask(__name__)
 
@@ -13,7 +13,10 @@ JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
 JIRA_USER_EMAIL = os.environ.get("JIRA_USER_EMAIL")
 JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL")  # e.g. https://yourcompany.atlassian.net
 
-# A sample mapping of workflows that GPT will select from
+# GPT client setup
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Example mapping of known onboarding workflows
 AVAILABLE_WORKFLOWS = {
     "IT - Singapore": "Onboarding_IT_SG",
     "HR - Malaysia": "Onboarding_HR_MY",
@@ -27,17 +30,18 @@ You are a decision engine. Based on the following onboarding ticket fields, choo
 {list(AVAILABLE_WORKFLOWS.values())}
 
 Ticket Data:
+First Name: {ticket_data.get('first_name')}
+Last Name: {ticket_data.get('last_name')}
+Email: {ticket_data.get('email')}
 Department: {ticket_data.get('department')}
 Location: {ticket_data.get('location')}
-Role: {ticket_data.get('role')}
-Team: {ticket_data.get('team')}
+Job Title: {ticket_data.get('job_title')}
 
 Respond with ONLY the workflow name.
 """
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
-        api_key=OPENAI_API_KEY,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content.strip()
 
@@ -47,8 +51,12 @@ def trigger_uac_workflow(workflow_name, ticket_data):
     payload = {
         "workflow_name": workflow_name,
         "variables": {
-            "username": ticket_data.get("username"),
-            "location": ticket_data.get("location")
+            "first_name": ticket_data.get("first_name"),
+            "last_name": ticket_data.get("last_name"),
+            "email": ticket_data.get("email"),
+            "department": ticket_data.get("department"),
+            "location": ticket_data.get("location"),
+            "job_title": ticket_data.get("job_title")
         }
     }
     response = requests.post(UAC_API_URL, headers=headers, json=payload)
@@ -57,43 +65,39 @@ def trigger_uac_workflow(workflow_name, ticket_data):
 
 # Add a comment and optionally close the Jira ticket
 def comment_and_close_jira_ticket(ticket_key, workflow_name):
-    headers = {
-        "Authorization": f"Basic {JIRA_USER_EMAIL}:{JIRA_API_TOKEN}",
-        "Content-Type": "application/json"
-    }
     auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
+    headers = {"Content-Type": "application/json"}
 
-    # Comment on ticket
+    # Add comment
     comment_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket_key}/comment"
     comment_payload = {
         "body": f"ChatGPT selected the workflow `{workflow_name}` and it has been triggered in Stonebranch UAC."
     }
     requests.post(comment_url, json=comment_payload, auth=auth, headers=headers)
 
-    # Transition to Done (Assumes transition ID 31 is “Done” – you may need to confirm this)
+    # Transition ticket to "Done" (Transition ID may vary)
     transition_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket_key}/transitions"
-    transition_payload = {"transition": {"id": "31"}}
+    transition_payload = {"transition": {"id": "31"}}  # Confirm this ID in your Jira
     requests.post(transition_url, json=transition_payload, auth=auth, headers=headers)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.json
-        ticket_key = data.get("key") or data.get("issue", {}).get("key")
-        fields = data.get("fields") or data.get("issue", {}).get("fields", {})
-        
-        # Prepare simplified input for ChatGPT
+
         ticket_data = {
-            "department": fields.get("department", {}).get("value", "Unknown"),
-            "location": fields.get("location", {}).get("value", "Unknown"),
-            "role": fields.get("customfield_role", "Analyst"),
-            "team": fields.get("customfield_team", "N/A"),
-            "username": fields.get("customfield_username", "unknown.user")
+            "ticket_id": data.get("ticket_id"),
+            "first_name": data.get("first_name"),
+            "last_name": data.get("last_name"),
+            "email": data.get("email"),
+            "department": data.get("department"),
+            "location": data.get("location"),
+            "job_title": data.get("job_title")
         }
 
         workflow = get_workflow_from_gpt(ticket_data)
         uac_response = trigger_uac_workflow(workflow, ticket_data)
-        comment_and_close_jira_ticket(ticket_key, workflow)
+        comment_and_close_jira_ticket(ticket_data["ticket_id"], workflow)
 
         return jsonify({
             "status": "success",
