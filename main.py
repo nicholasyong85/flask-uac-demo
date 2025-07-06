@@ -5,25 +5,28 @@ from openai import OpenAI
 
 app = Flask(__name__)
 
-# Set these environment variables on Render
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# Set these environment variables in Render
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 UAC_API_TOKEN = os.environ.get("UAC_API_TOKEN")
 UAC_API_URL = os.environ.get("UAC_API_URL")  # e.g. https://uac.mycompany.com/api/workflow/launch
 JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN")
 JIRA_USER_EMAIL = os.environ.get("JIRA_USER_EMAIL")
 JIRA_BASE_URL = os.environ.get("JIRA_BASE_URL")  # e.g. https://yourcompany.atlassian.net
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct")  # Optional override
 
-# GPT client setup
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Connect to OpenRouter API
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
 
-# Example mapping of known onboarding workflows
+# Available onboarding workflows
 AVAILABLE_WORKFLOWS = {
     "IT - Singapore": "Onboarding_IT_SG",
     "HR - Malaysia": "Onboarding_HR_MY",
     "Finance - Remote": "Onboarding_Fin_Remote"
 }
 
-# Use ChatGPT to choose the right UAC workflow
 def get_workflow_from_gpt(ticket_data):
     prompt = f"""
 You are a decision engine. Based on the following onboarding ticket fields, choose the best matching workflow from this list:
@@ -40,12 +43,11 @@ Job Title: {ticket_data.get('job_title')}
 Respond with ONLY the workflow name.
 """
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model=OPENROUTER_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content.strip()
 
-# Call UAC to launch the chosen workflow
 def trigger_uac_workflow(workflow_name, ticket_data):
     headers = {"Authorization": f"Bearer {UAC_API_TOKEN}"}
     payload = {
@@ -63,21 +65,18 @@ def trigger_uac_workflow(workflow_name, ticket_data):
     response.raise_for_status()
     return response.json()
 
-# Add a comment and optionally close the Jira ticket
 def comment_and_close_jira_ticket(ticket_key, workflow_name):
     auth = (JIRA_USER_EMAIL, JIRA_API_TOKEN)
     headers = {"Content-Type": "application/json"}
 
-    # Add comment
     comment_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket_key}/comment"
     comment_payload = {
         "body": f"ChatGPT selected the workflow `{workflow_name}` and it has been triggered in Stonebranch UAC."
     }
     requests.post(comment_url, json=comment_payload, auth=auth, headers=headers)
 
-    # Transition ticket to "Done" (Transition ID may vary)
     transition_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket_key}/transitions"
-    transition_payload = {"transition": {"id": "31"}}  # Confirm this ID in your Jira
+    transition_payload = {"transition": {"id": "31"}}  # Adjust this to your Jira transition ID
     requests.post(transition_url, json=transition_payload, auth=auth, headers=headers)
 
 @app.route("/webhook", methods=["POST"])
